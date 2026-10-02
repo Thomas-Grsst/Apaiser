@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Tête rose apaisée : yeux fermés, joues, petit sourire -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Tête -->
+    <path
+        android:fillColor="#F48FAE"
+        android:pathData="M54,26a28,28 0 1,1 0,56a28,28 0 1,1 0,-56z" />
+    <!-- Mèche -->
+    <path
+        android:fillColor="#F48FAE"
+        android:pathData="M52,28C50,21 55,17 60,19C56,21 55,24 57,28z" />
+    <!-- Joues -->
+    <path
+        android:fillColor="#E8648F"
+        android:fillAlpha="0.55"
+        android:pathData="M37,60a4.5,4.5 0 1,1 9,0a4.5,4.5 0 1,1 -9,0z" />
+    <path
+        android:fillColor="#E8648F"
+        android:fillAlpha="0.55"
+        android:pathData="M62,60a4.5,4.5 0 1,1 9,0a4.5,4.5 0 1,1 -9,0z" />
+    <!-- Yeux fermés -->
+    <path
+        android:strokeColor="#7E1F42"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M40,51Q45,56 50,51" />
+    <path
+        android:strokeColor="#7E1F42"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M58,51Q63,56 68,51" />
+    <!-- Sourire -->
+    <path
+        android:strokeColor="#7E1F42"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round"
+        android:pathData="M48,64Q54,69 60,64" />
+</vector>
