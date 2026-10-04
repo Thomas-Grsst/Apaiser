@@ -6,6 +6,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/data/latest.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
 
 // Palette de l'artefact Zen
 const kInk = Color(0xFF3B2630);
@@ -35,7 +38,14 @@ const levels = [
   Level(2, 'Énervé', Color(0xFFFFB27A)),
   Level(3, 'Très énervé', Color(0xFFF48FAE)),
   Level(4, 'À bout', Color(0xFFD64576)),
+  Level(5, 'Triste', Color(0xFF8FB8E8)),
 ];
+
+Level levelById(int id) =>
+    levels.firstWhere((l) => l.id == id, orElse: () => levels[1]);
+
+// Temps pour redescendre après avoir déposé quelque chose
+const cooldown = Duration(minutes: 15);
 
 const defaultPhrases = [
   "Je n'ai pas besoin de répondre tout de suite.",
@@ -60,8 +70,93 @@ class Note {
       Note(j['id'], j['text'], j['level'], j['at'], j['calm'] ?? false);
 }
 
-void main() {
+// Notification permanente « le temps de redescendre » : le compte à rebours
+// est géré par Android (chronomètre), il continue même app fermée.
+class CooldownNotifier {
+  static final _plugin = FlutterLocalNotificationsPlugin();
+  static const _ongoingId = 1;
+  static const _doneId = 2;
+
+  static AndroidFlutterLocalNotificationsPlugin? get _android =>
+      _plugin.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+
+  static Future<void> init() async {
+    tzdata.initializeTimeZones();
+    await _plugin.initialize(
+      settings: const InitializationSettings(
+        android: AndroidInitializationSettings('ic_stat_zen'),
+      ),
+    );
+  }
+
+  static Future<void> start(int endMs) async {
+    await _android?.requestNotificationsPermission();
+    final remaining = endMs - DateTime.now().millisecondsSinceEpoch;
+    if (remaining <= 0) return;
+
+    await _plugin.show(
+      id: _ongoingId,
+      title: 'Le temps de redescendre',
+      body: 'Prends ce moment pour toi.',
+      notificationDetails: NotificationDetails(
+        android: AndroidNotificationDetails(
+          'zen_timer',
+          'Minuteur',
+          channelDescription: 'Le compte à rebours pour redescendre',
+          icon: 'ic_stat_zen',
+          color: kBerry,
+          importance: Importance.low,
+          priority: Priority.low,
+          playSound: false,
+          enableVibration: false,
+          ongoing: true,
+          autoCancel: false,
+          onlyAlertOnce: true,
+          showWhen: true,
+          when: endMs,
+          usesChronometer: true,
+          chronometerCountDown: true,
+          timeoutAfter: remaining,
+          category: AndroidNotificationCategory.stopwatch,
+        ),
+      ),
+    );
+
+    final exact = await _android?.canScheduleExactNotifications() ?? false;
+    await _plugin.zonedSchedule(
+      id: _doneId,
+      title: "C'est bon, tu es redescendu.",
+      body: 'Tu peux y retourner, calmement.',
+      scheduledDate: tz.TZDateTime.fromMillisecondsSinceEpoch(tz.UTC, endMs),
+      notificationDetails: const NotificationDetails(
+        android: AndroidNotificationDetails(
+          'zen_done',
+          'Fin du minuteur',
+          channelDescription: 'Prévient quand le temps de redescendre est passé',
+          icon: 'ic_stat_zen',
+          color: kBerry,
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+      ),
+      androidScheduleMode: exact
+          ? AndroidScheduleMode.exactAllowWhileIdle
+          : AndroidScheduleMode.inexactAllowWhileIdle,
+    );
+  }
+
+  static Future<void> stop() async {
+    await _plugin.cancel(id: _ongoingId);
+    await _plugin.cancel(id: _doneId);
+  }
+
+  static Future<void> clearOngoing() => _plugin.cancel(id: _ongoingId);
+}
+
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await CooldownNotifier.init();
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.dark,
@@ -106,16 +201,77 @@ class _ZenHomeState extends State<ZenHome> {
   List<String> phrases = List.of(defaultPhrases);
   int cur = 0;
 
+  // Minuteur « le temps de redescendre » (fin en ms epoch, survit à la fermeture)
+  int? calmUntil;
+  bool calmDone = false;
+  Timer? ticker;
+
   @override
   void initState() {
     super.initState();
     _load();
   }
 
+  @override
+  void dispose() {
+    ticker?.cancel();
+    super.dispose();
+  }
+
+  int get remainingMs =>
+      calmUntil == null ? 0 : calmUntil! - DateTime.now().millisecondsSinceEpoch;
+
+  void startCooldown() {
+    calmUntil = DateTime.now().add(cooldown).millisecondsSinceEpoch;
+    calmDone = false;
+    prefs?.setInt('calmUntil', calmUntil!);
+    CooldownNotifier.start(calmUntil!);
+    _tick();
+  }
+
+  void stopCooldown() {
+    ticker?.cancel();
+    CooldownNotifier.stop();
+    prefs?.remove('calmUntil');
+    setState(() {
+      calmUntil = null;
+      calmDone = false;
+    });
+  }
+
+  void _tick() {
+    ticker?.cancel();
+    ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (remainingMs <= 0) {
+        ticker?.cancel();
+        prefs?.remove('calmUntil');
+        CooldownNotifier.clearOngoing();
+        HapticFeedback.mediumImpact();
+        setState(() {
+          calmUntil = null;
+          calmDone = true;
+        });
+      } else {
+        setState(() {});
+      }
+    });
+    setState(() {});
+  }
+
   Future<void> _load() async {
     final p = await SharedPreferences.getInstance();
     final rawNotes = p.getString('notes');
     final rawPhrases = p.getStringList('phrases');
+    final until = p.getInt('calmUntil');
+    if (until != null) {
+      if (until > DateTime.now().millisecondsSinceEpoch) {
+        calmUntil = until;
+        CooldownNotifier.start(until);
+        _tick();
+      } else {
+        p.remove('calmUntil');
+      }
+    }
     setState(() {
       prefs = p;
       if (rawNotes != null) {
@@ -190,6 +346,7 @@ class _ZenHomeState extends State<ZenHome> {
                 ],
               ),
             ),
+            if (calmUntil != null || calmDone) _cooldownCard(),
             Expanded(child: body),
           ],
         ),
@@ -213,6 +370,69 @@ class _ZenHomeState extends State<ZenHome> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _cooldownCard() {
+    final done = calmDone;
+    final left = Duration(milliseconds: remainingMs.clamp(0, cooldown.inMilliseconds));
+    final mm = left.inMinutes.toString().padLeft(2, '0');
+    final ss = (left.inSeconds % 60).toString().padLeft(2, '0');
+    final progress = 1 - left.inMilliseconds / cooldown.inMilliseconds;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 14, 6, 14),
+        decoration: BoxDecoration(
+          color: kSun,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: kSunLine, width: 1.5),
+        ),
+        child: Row(
+          children: [
+            Icon(done ? Icons.check_circle_outline : Icons.hourglass_bottom,
+                color: kSunInk),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(done ? "C'est bon, tu es redescendu." : 'Le temps de redescendre',
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w800, color: kSunInk)),
+                  const SizedBox(height: 4),
+                  if (done)
+                    const Text('Tu peux y retourner, calmement.',
+                        style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700))
+                  else ...[
+                    Text('$mm:$ss',
+                        style: const TextStyle(
+                            fontSize: 26,
+                            height: 1.1,
+                            fontWeight: FontWeight.w800,
+                            fontFeatures: [FontFeature.tabularFigures()])),
+                    const SizedBox(height: 8),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(99),
+                      child: LinearProgressIndicator(
+                        value: progress,
+                        minHeight: 6,
+                        color: kRose,
+                        backgroundColor: Colors.white,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            IconButton(
+              tooltip: done ? 'Fermer' : 'Arrêter le minuteur',
+              onPressed: stopCooldown,
+              icon: const Icon(Icons.close, size: 20, color: kSunInk),
+            ),
+          ],
         ),
       ),
     );
@@ -364,6 +584,7 @@ class _VentTabState extends State<VentTab> {
     s.update(() {
       s.notes.insert(0, Note(id, text, level, DateTime.now().millisecondsSinceEpoch, false));
     });
+    s.startCooldown();
     ctrl.clear();
     FocusScope.of(context).unfocus();
     setState(() => toast = pick);
@@ -531,7 +752,7 @@ class _VentTabState extends State<VentTab> {
 
   Widget _noteCard(Note n) {
     final s = widget.state;
-    final lv = levels[(n.level - 1).clamp(0, 3)];
+    final lv = levelById(n.level);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
